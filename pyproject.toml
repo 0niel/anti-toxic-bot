@@ -1,0 +1,56 @@
+
+[tool.poetry]
+name = "anti-toxic-bot"
+version = "0.1.0"
+description = ""
+authors = ["Sergey Dmitriev <51058739+0niel@users.noreply.github.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+requests = "^2.32.3"
+pydantic = "^2.7.3"
+python-dotenv = "^1.0.1"
+python-telegram-bot = {extras = ["job-queue"], version = "^21.4"}
+pydantic-settings = "^2.3.4"
+aiosqlite = "^0.20.0"
+perspectiveapi = "^1.1.0"
+
+[tool.poetry.group.dev.dependencies]
+setuptools = "^70.0.0"
+mypy = "^1.10.0"
+black = "^24.4.2"
+isort = "^5.13.2"
+autoflake = "^2.3.1"
+flake8 = "^7.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 120
+target-version = ['py311']
+include = '\.pyi?$'
+exclude = '''
+(
+  /(
+      \.eggs
+    | \.git
+    | \.hg
+    | \.mypy_cache
+    | \.tox
+    | \.venv
+    | _build
+    | buck-out
+    | build
+    | dist
+  )/
+)
+'''
+
+[tool.isort]
+multi_line_output = 3
+include_trailing_comma = true
+force_grid_wrap = 0
+line_length = 120
