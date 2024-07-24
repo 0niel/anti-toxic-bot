@@ -38,7 +38,7 @@ async def check_message(update: Update, context: CallbackContext):
         text, attributes=[Attribute.SEVERE_TOXICITY, Attribute.TOXICITY, Attribute.SEXUALLY_EXPLICIT]
     )
 
-    if response["severe_toxicity"] > 0.9 or response["toxicity"] > 0.9 or response["sexually_explicit"] > 0.9:
+    if response.severe_toxicity > 0.9 or response.toxicity > 0.9 or response.sexually_explicit> 0.9:
         until = datetime.utcnow() + timedelta(hours=1)
         async with aiosqlite.connect("mute_bot.db") as db:
             await db.execute("INSERT OR REPLACE INTO mutes (user_id, until) VALUES (?, ?)", (user_id, until))
