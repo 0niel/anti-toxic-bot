@@ -25,11 +25,11 @@ Perspective API бесплатен и доступен для использов
 
 1. Клонируйте репозиторий:
     ```bash
-    git clone https://github.com/yourusername/AntiToxicBot.git
+    git clone https://github.com/0niel/anti-toxic-bot.git
     ```
 2. Перейдите в директорию проекта:
     ```bash
-    cd AntiToxicBot
+    cd anti-toxic-bot
     ```
 3. Установите зависимости:
     ```bash
@@ -49,7 +49,7 @@ Perspective API бесплатен и доступен для использов
     ```
 2. Перейдите в директорию проекта:
     ```bash
-    cd AntiToxicBot
+    cd anti-toxic-bot
     ```
 3. Соберите Docker-образ:
     ```bash
