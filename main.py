@@ -50,10 +50,10 @@ async def check_message(update: Update, context: CallbackContext):
     )
 
     if (
-        response.severe_toxicity > 0.8
-        or response.toxicity > 0.8
-        or response.sexually_explicit > 0.8
-        or response.insult > 0.8
+        response.severe_toxicity > 0.78
+        or response.toxicity > 0.78
+        or response.sexually_explicit > 0.78
+        or response.insult > 0.78
     ):
         until = datetime.now(timezone.utc) + timedelta(hours=3)
         async with aiosqlite.connect("mute_bot.db") as db:
@@ -81,7 +81,7 @@ async def check_message(update: Update, context: CallbackContext):
 
 
 async def unmute_user(context: CallbackContext):
-    job = context.job if context.job else None
+    job = context.job or None
     chat_id, user_id = job.data if job else context.args
 
     logger.info(f"Unmuting user {user_id} in chat {chat_id}.")
