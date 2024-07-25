@@ -2,6 +2,7 @@ import logging
 from datetime import datetime, timedelta
 
 import aiosqlite
+from datetime import timezone
 from perspective import Attribute, Perspective
 from telegram import ChatPermissions, Update
 from telegram.constants import ParseMode
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 p = Perspective(key=config.PERSPECTIVE_API_KEY)
 
-ADMIN_USERNAMES = config.ADMIN_USERNAMES  # список администраторов по именам пользователей
+ADMIN_USERNAMES = config.ADMIN_USERNAMES
 
 
 async def init_db():
@@ -41,22 +42,29 @@ async def check_message(update: Update, context: CallbackContext):
     logger.info(f"Checking message from user {user_id} in chat {chat_id}.")
 
     response = await p.score(
-        text, attributes=[Attribute.SEVERE_TOXICITY, Attribute.TOXICITY, Attribute.SEXUALLY_EXPLICIT]
+        text, attributes=[Attribute.SEVERE_TOXICITY, Attribute.TOXICITY, Attribute.SEXUALLY_EXPLICIT, Attribute.INSULT]
     )
 
-    logger.info(f"Perspective API response for user {user_id}: {response}")
+    logger.info(
+        f"Perspective API response for user {user_id}: {[response.toxicity, response.severe_toxicity, response.sexually_explicit, response.insult]}"
+    )
 
-    if response.severe_toxicity > 0.9 or response.toxicity > 0.9 or response.sexually_explicit > 0.9:
-        until = datetime.utcnow() + timedelta(hours=1)
+    if (
+        response.severe_toxicity > 0.8
+        or response.toxicity > 0.8
+        or response.sexually_explicit > 0.8
+        or response.insult > 0.8
+    ):
+        until = datetime.now(timezone.utc) + timedelta(hours=3)
         async with aiosqlite.connect("mute_bot.db") as db:
             await db.execute("INSERT OR REPLACE INTO mutes (user_id, until) VALUES (?, ?)", (user_id, until))
             await db.commit()
 
         logger.info(f"User {user_id} muted until {until}.")
 
-        if chat_type == "supergroup":
-            context.job_queue.run_once(unmute_user, when=until, data=(chat_id, user_id), name=str(user_id))
+        context.job_queue.run_once(unmute_user, when=until, data=(chat_id, user_id), name=str(user_id))
 
+        if chat_type == "supergroup":
             await context.bot.restrict_chat_member(
                 chat_id, user_id, permissions=ChatPermissions(can_send_messages=False), until_date=until
             )
@@ -65,7 +73,6 @@ async def check_message(update: Update, context: CallbackContext):
                 f"🚫 Пользователь @{update.message.from_user.username} был временно заблокирован на 1 час за токсичность.",
             )
         else:
-            context.job_queue.run_once(unmute_user, when=until, data=(chat_id, user_id), name=str(user_id))
             await update.message.delete()
             await update.message.reply_text(
                 f"🚫 Пользователь @{update.message.from_user.username} был временно заблокирован на 1 час за токсичность. Сообщения будут удаляться.",
