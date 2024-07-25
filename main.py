@@ -1,8 +1,7 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import aiosqlite
-from datetime import timezone
 from perspective import Attribute, Perspective
 from telegram import ChatPermissions, Update
 from telegram.constants import ParseMode
@@ -24,8 +23,30 @@ async def init_db():
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS mutes (
-                user_id INTEGER PRIMARY KEY,
-                until TIMESTAMP
+                user_id INTEGER,
+                chat_id INTEGER,
+                until TIMESTAMP,
+                PRIMARY KEY (user_id, chat_id)
+            )
+        """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS toxicity_scores (
+                user_id INTEGER,
+                chat_id INTEGER,
+                score REAL,
+                timestamp TIMESTAMP
+            )
+        """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_joins (
+                user_id INTEGER,
+                chat_id INTEGER,
+                join_date TIMESTAMP,
+                PRIMARY KEY (user_id, chat_id)
             )
         """
         )
@@ -49,20 +70,48 @@ async def check_message(update: Update, context: CallbackContext):
         f"Perspective API response for user {user_id}: {[response.toxicity, response.severe_toxicity, response.sexually_explicit, response.insult]}"
     )
 
+    # Accumulate toxicity score
+    score = max(response.toxicity, response.severe_toxicity, response.sexually_explicit, response.insult)
+    async with aiosqlite.connect("mute_bot.db") as db:
+        await db.execute(
+            "INSERT INTO toxicity_scores (user_id, chat_id, score, timestamp) VALUES (?, ?, ?, ?)",
+            (user_id, chat_id, score, datetime.now(timezone.utc)),
+        )
+        await db.commit()
+
+    # Check user's join date
+    async with aiosqlite.connect("mute_bot.db") as db:
+        async with db.execute(
+            "SELECT join_date FROM user_joins WHERE user_id = ? AND chat_id = ?", (user_id, chat_id)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                join_date = datetime.fromisoformat(row[0])
+                new_user = (datetime.now(timezone.utc) - join_date).total_seconds() < 10800  # 3 hours
+            else:
+                new_user = False
+
+    # Adjust thresholds
+    toxicity_threshold = 0.78
+    if new_user:
+        toxicity_threshold -= 0.1  # Lower threshold for new users
+    if score > 0.9:
+        toxicity_threshold -= 0.1  # Lower threshold for highly toxic messages
+
     if (
-        response.severe_toxicity > 0.78
-        or response.toxicity > 0.78
-        or response.sexually_explicit > 0.78
-        or response.insult > 0.78
+        response.severe_toxicity > toxicity_threshold
+        or response.toxicity > toxicity_threshold
+        or response.sexually_explicit > toxicity_threshold
+        or response.insult > toxicity_threshold
     ):
         until = datetime.now(timezone.utc) + timedelta(hours=3)
         async with aiosqlite.connect("mute_bot.db") as db:
-            await db.execute("INSERT OR REPLACE INTO mutes (user_id, until) VALUES (?, ?)", (user_id, until))
+            await db.execute("INSERT OR REPLACE INTO mutes (user_id, chat_id, until) VALUES (?, ?, ?)", (user_id, chat_id, until))
             await db.commit()
 
         logger.info(f"User {user_id} muted until {until}.")
 
-        context.job_queue.run_once(unmute_user, when=until, data=(chat_id, user_id), name=str(user_id))
+        context.job_queue.run_once(unmute_user, when=until, data=(chat_id, user_id), name=f"{chat_id}_{user_id}")
 
         if chat_type == "supergroup":
             await context.bot.restrict_chat_member(
@@ -70,12 +119,12 @@ async def check_message(update: Update, context: CallbackContext):
             )
 
             await update.message.reply_text(
-                f"🚫 Пользователь @{update.message.from_user.username} был временно заблокирован на 1 час за токсичность.",
+                f"🚫 Пользователь @{update.message.from_user.username} был временно заблокирован на 3 часа за токсичность.",
             )
         else:
             await update.message.delete()
             await update.message.reply_text(
-                f"🚫 Пользователь @{update.message.from_user.username} был временно заблокирован на 1 час за токсичность. Сообщения будут удаляться.",
+                f"🚫 Пользователь @{update.message.from_user.username} был временно заблокирован на 3 часа за токсичность. Сообщения будут удаляться.",
                 quote=False,
             )
 
@@ -87,7 +136,7 @@ async def unmute_user(context: CallbackContext):
     logger.info(f"Unmuting user {user_id} in chat {chat_id}.")
 
     async with aiosqlite.connect("mute_bot.db") as db:
-        await db.execute("DELETE FROM mutes WHERE user_id = ?", (user_id,))
+        await db.execute("DELETE FROM mutes WHERE user_id = ? AND chat_id = ?", (user_id, chat_id))
         await db.commit()
 
     chat = await context.bot.get_chat(chat_id)
@@ -108,14 +157,15 @@ async def start(update: Update, context: CallbackContext):
 
 async def muted_users(update: Update, context: CallbackContext):
     logger.info("Received /muted_users command.")
+    chat_id = update.message.chat_id
     async with aiosqlite.connect("mute_bot.db") as db:
-        async with db.execute("SELECT user_id, until FROM mutes") as cursor:
+        async with db.execute("SELECT user_id, until FROM mutes WHERE chat_id = ?", (chat_id,)) as cursor:
             rows = await cursor.fetchall()
             if rows:
                 message = "🚫 Временно заблокированные пользователи:\n\n"
                 for row in rows:
                     user_id, until = row
-                    until = datetime.strptime(until.split(".")[0], "%Y-%m-%d %H:%M:%S")
+                    until = datetime.fromisoformat(until)
                     message += (
                         f"- <a href='tg://user?id={user_id}'>{user_id}</a> до {until.strftime('%Y-%m-%d %H:%M:%S')}\n"
                     )
@@ -142,6 +192,35 @@ async def unmute_command(update: Update, context: CallbackContext):
     )
 
 
+async def toxic_users(update: Update, context: CallbackContext):
+    logger.info("Received /toxic_users command.")
+    chat_id = update.message.chat_id
+    async with aiosqlite.connect("mute_bot.db") as db:
+        async with db.execute(
+            """
+            SELECT user_id, AVG(score) as avg_score
+            FROM toxicity_scores
+            WHERE chat_id = ?
+            GROUP BY user_id
+            ORDER BY avg_score DESC
+            LIMIT 10
+            """,
+            (chat_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            if rows:
+                message = "😡 Антирейтинг самых токсичных пользователей:\n\n"
+                for row in rows:
+                    user_id, avg_score = row
+                    message += (
+                        f"- <a href='tg://user?id={user_id}'>{user_id}</a> со средним уровнем токсичности {avg_score:.2f}\n"
+                    )
+                message += "\nГоните их и порицайте! 🚫"
+                await update.message.reply_text(message, parse_mode=ParseMode.HTML)
+            else:
+                await update.message.reply_text("😊 В этом чате нет токсичных пользователей.")
+
+
 def main():
     logger.info("Starting bot...")
     app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
@@ -150,6 +229,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("muted_users", muted_users))
     app.add_handler(CommandHandler("unmute", unmute_command, filters=filters.ChatType.GROUPS))
+    app.add_handler(CommandHandler("toxic_users", toxic_users))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_message))
 
     job_queue.set_application(app)
