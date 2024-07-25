@@ -6,10 +6,11 @@ from perspective import Attribute, Perspective
 from telegram import ChatPermissions, Update
 from telegram.constants import ParseMode
 from telegram.ext import ApplicationBuilder, CallbackContext, CommandHandler, JobQueue, MessageHandler, filters
+from telegram_bot_pagination import InlineKeyboardPaginator
 
 from config import config
 
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levellevel)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 p = Perspective(key=config.PERSPECTIVE_API_KEY)
@@ -59,6 +60,7 @@ async def check_message(update: Update, context: CallbackContext):
     user_id = update.message.from_user.id
     chat_id = update.message.chat_id
     chat_type = update.message.chat.type
+    user = update.message.from_user
 
     logger.info(f"Checking message from user {user_id} in chat {chat_id}.")
 
@@ -98,35 +100,52 @@ async def check_message(update: Update, context: CallbackContext):
     if score > 0.9:
         toxicity_threshold -= 0.1  # Lower threshold for highly toxic messages
 
+    # Check accumulated points
+    accumulated_points = 0
+    async with aiosqlite.connect("mute_bot.db") as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM toxicity_scores WHERE user_id = ? AND chat_id = ? AND score > 0.6", (user_id, chat_id)
+        ) as cursor:
+            row = await cursor.fetchone()
+            accumulated_points = row[0]
+
+    mute_duration_hours = 3 + (accumulated_points // 3) * 2  # Increase mute duration for repeated offenders
+
     if (
         response.severe_toxicity > toxicity_threshold
         or response.toxicity > toxicity_threshold
         or response.sexually_explicit > toxicity_threshold
         or response.insult > toxicity_threshold
     ):
-        until = datetime.now(timezone.utc) + timedelta(hours=3)
-        async with aiosqlite.connect("mute_bot.db") as db:
-            await db.execute("INSERT OR REPLACE INTO mutes (user_id, chat_id, until) VALUES (?, ?, ?)", (user_id, chat_id, until))
-            await db.commit()
-
-        logger.info(f"User {user_id} muted until {until}.")
-
-        context.job_queue.run_once(unmute_user, when=until, data=(chat_id, user_id), name=f"{chat_id}_{user_id}")
-
-        if chat_type == "supergroup":
-            await context.bot.restrict_chat_member(
-                chat_id, user_id, permissions=ChatPermissions(can_send_messages=False), until_date=until
-            )
-
-            await update.message.reply_text(
-                f"🚫 Пользователь @{update.message.from_user.username} был временно заблокирован на 3 часа за токсичность.",
-            )
+        if accumulated_points < 3:
+            accumulated_points += 1
         else:
-            await update.message.delete()
-            await update.message.reply_text(
-                f"🚫 Пользователь @{update.message.from_user.username} был временно заблокирован на 3 часа за токсичность. Сообщения будут удаляться.",
-                quote=False,
-            )
+            accumulated_points = 0
+            until = datetime.now(timezone.utc) + timedelta(hours=mute_duration_hours)
+            async with aiosqlite.connect("mute_bot.db") as db:
+                await db.execute(
+                    "INSERT OR REPLACE INTO mutes (user_id, chat_id, until) VALUES (?, ?, ?)", (user_id, chat_id, until)
+                )
+                await db.commit()
+
+            logger.info(f"User {user_id} muted until {until}.")
+
+            context.job_queue.run_once(unmute_user, when=until, data=(chat_id, user_id), name=f"{chat_id}_{user_id}")
+
+            if chat_type == "supergroup":
+                await context.bot.restrict_chat_member(
+                    chat_id, user_id, permissions=ChatPermissions(can_send_messages=False), until_date=until
+                )
+
+                await update.message.reply_text(
+                    f"🚫 Пользователь @{user.username or user.full_name} был временно заблокирован на {mute_duration_hours} часов за токсичность.",
+                )
+            else:
+                await update.message.delete()
+                await update.message.reply_text(
+                    f"🚫 Пользователь @{user.username or user.full_name} был временно заблокирован на {mute_duration_hours} часов за токсичность. Сообщения будут удаляться.",
+                    quote=False,
+                )
 
 
 async def unmute_user(context: CallbackContext):
@@ -140,12 +159,13 @@ async def unmute_user(context: CallbackContext):
         await db.commit()
 
     chat = await context.bot.get_chat(chat_id)
+    user = await context.bot.get_chat_member(chat_id, user_id).user
     if chat.type == "supergroup":
         await context.bot.restrict_chat_member(chat_id, user_id, permissions=ChatPermissions(can_send_messages=True))
 
     await context.bot.send_message(
         chat_id,
-        text=f"✅ Пользователь <a href='tg://user?id={user_id}'>@{user_id}</a> был разблокирован.",
+        text=f"✅ Пользователь <a href='tg://user?id={user_id}'>{user.username or user.full_name}</a> был разблокирован.",
         parse_mode=ParseMode.HTML,
     )
 
@@ -166,9 +186,8 @@ async def muted_users(update: Update, context: CallbackContext):
                 for row in rows:
                     user_id, until = row
                     until = datetime.fromisoformat(until)
-                    message += (
-                        f"- <a href='tg://user?id={user_id}'>{user_id}</a> до {until.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                    )
+                    user = await context.bot.get_chat_member(chat_id, user_id).user
+                    message += f"- <a href='tg://user?id={user_id}'>{user.username or user.full_name}</a> до {until.strftime('%Y-%m-%d %H:%M:%S')}\n"
                 await update.message.reply_text(message, parse_mode=ParseMode.HTML)
             else:
                 await update.message.reply_text("✅ Нет временно заблокированных пользователей.")
@@ -212,13 +231,49 @@ async def toxic_users(update: Update, context: CallbackContext):
                 message = "😡 Антирейтинг самых токсичных пользователей:\n\n"
                 for row in rows:
                     user_id, avg_score = row
+                    user = await context.bot.get_chat_member(chat_id, user_id).user
                     message += (
-                        f"- <a href='tg://user?id={user_id}'>{user_id}</a> со средним уровнем токсичности {avg_score:.2f}\n"
+                        f"- {user.username or user.full_name} 💩 со средним уровнем токсичности {avg_score:.2f}\n"
                     )
                 message += "\nГоните их и порицайте! 🚫"
                 await update.message.reply_text(message, parse_mode=ParseMode.HTML)
             else:
                 await update.message.reply_text("😊 В этом чате нет токсичных пользователей.")
+
+
+async def mute_history(update: Update, context: CallbackContext):
+    logger.info("Received /mute_history command.")
+    chat_id = update.message.chat_id
+    user_id = update.message.from_user.id
+    page = int(context.args[0]) if context.args else 1
+    items_per_page = 10
+
+    async with aiosqlite.connect("mute_bot.db") as db:
+        async with db.execute("SELECT COUNT(*) FROM mutes WHERE chat_id = ?", (chat_id,)) as cursor:
+            total_records = await cursor.fetchone()[0]
+
+        async with db.execute(
+            "SELECT user_id, until FROM mutes WHERE chat_id = ? ORDER BY until DESC LIMIT ? OFFSET ?",
+            (chat_id, items_per_page, (page - 1) * items_per_page),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+    if rows:
+        message = "📜 История блокировок:\n\n"
+        for row in rows:
+            user_id, until = row
+            until = datetime.fromisoformat(until)
+            user = await context.bot.get_chat_member(chat_id, user_id).user
+            message += f"- Пользователь <a href='tg://user?id={user_id}'>{user.username or user.full_name}</a> был заблокирован до {until.strftime('%Y-%м-%d %H:%М:%S')}\n"
+
+        paginator = InlineKeyboardPaginator(
+            page_count=(total_records + items_per_page - 1) // items_per_page,
+            current_page=page,
+            data_pattern="mute_history#{page}",
+        )
+        await update.message.reply_text(message, parse_mode=ParseMode.HTML, reply_markup=paginator.markup)
+    else:
+        await update.message.reply_text("📜 Нет записей о блокировках.")
 
 
 def main():
@@ -230,6 +285,7 @@ def main():
     app.add_handler(CommandHandler("muted_users", muted_users))
     app.add_handler(CommandHandler("unmute", unmute_command, filters=filters.ChatType.GROUPS))
     app.add_handler(CommandHandler("toxic_users", toxic_users))
+    app.add_handler(CommandHandler("mute_history", mute_history))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_message))
 
     job_queue.set_application(app)

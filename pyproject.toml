@@ -15,6 +15,7 @@ python-telegram-bot = {extras = ["job-queue"], version = "^21.4"}
 pydantic-settings = "^2.3.4"
 aiosqlite = "^0.20.0"
 perspectiveapi = "^1.1.0"
+python-telegram-bot-pagination = "^0.0.3"
 
 [tool.poetry.group.dev.dependencies]
 setuptools = "^70.0.0"

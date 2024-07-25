@@ -713,6 +713,16 @@ socks = ["httpx[socks]"]
 webhooks = ["tornado (>=6.4,<7.0)"]
 
 [[package]]
+name = "python-telegram-bot-pagination"
+version = "0.0.3"
+description = "Python inline keyboard pagination for Telegram Bot API"
+optional = false
+python-versions = "*"
+files = [
+    {file = "python-telegram-bot-pagination-0.0.3.tar.gz", hash = "sha256:15305e9faea6b33956f016f7c064adabc0e450142a7be33286c6f8d5fbbcdd49"},
+]
+
+[[package]]
 name = "pytz"
 version = "2024.1"
 description = "World timezone definitions, modern and historical"
@@ -851,4 +861,4 @@ zstd = ["zstandard (>=0.18.0)"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.10"
-content-hash = "2c704fb29883a0457dd63e978d12f106decca2aea697f162401fd0797323233f"
+content-hash = "102d58d3df5755ca2ed013b421cd577ff2b046727d009771ead596a7745a4ebf"
