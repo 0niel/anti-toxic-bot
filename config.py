@@ -1,15 +1,20 @@
 import os
-
 from dotenv import load_dotenv
-from pydantic_settings import BaseSettings
+from pydantic import BaseSettings, validator
 
 load_dotenv()
 
 
 class Config(BaseSettings):
-    PERSPECTIVE_API_KEY: str = os.getenv("PERSPECTIVE_API_KEY")
-    TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN")
-    ADMIN_USERNAMES: list[str] = os.getenv("ADMIN_USERNAMES").split(",")
+    PERSPECTIVE_API_KEY: str
+    TELEGRAM_BOT_TOKEN: str
+    ADMIN_USERNAMES: list[str]
+
+    @validator("ADMIN_USERNAMES", pre=True, each_item=True)
+    def split_admin_usernames(cls, value):
+        if isinstance(value, str):
+            return value.split(",")
+        return value
 
 
 config = Config()
